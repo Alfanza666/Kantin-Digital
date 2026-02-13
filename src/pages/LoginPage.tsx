@@ -37,7 +37,7 @@ export default function LoginPage({ onLogin, onBack }: LoginPageProps) {
       // Simulate API delay
       await new Promise(resolve => setTimeout(resolve, 500));
       
-      const user = authService.loginByNIK(nik, password);
+      const user = await authService.loginByNIK(nik, password);
       
       if (user) {
         onLogin(user);

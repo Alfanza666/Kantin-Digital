@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { 
   LayoutDashboard, 
   Package, 
@@ -16,7 +16,9 @@ import {
   Clock,
   Lock,
   Eye,
-  EyeOff
+  EyeOff,
+  Upload,
+  Image as ImageIcon
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -47,6 +49,9 @@ export default function SellerDashboard({ user, onLogout }: SellerDashboardProps
   const [isWithdrawalDialogOpen, setIsWithdrawalDialogOpen] = useState(false);
   const [isPasswordDialogOpen, setIsPasswordDialogOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
+  
+  const productFileInputRef = useRef<HTMLInputElement>(null);
+
   const [productForm, setProductForm] = useState({
     name: '',
     description: '',
@@ -76,22 +81,23 @@ export default function SellerDashboard({ user, onLogout }: SellerDashboardProps
     loadData();
   }, [user.id]);
 
-  const loadData = () => {
-    // Load products
-    const sellerProducts = productService.getBySeller(user.id);
-    setProducts(sellerProducts);
-
-    // Load transactions
-    const sellerTransactions = transactionService.getBySeller(user.id);
-    setTransactions(sellerTransactions);
-
-    // Load withdrawals
-    const sellerWithdrawals = withdrawalService.getBySeller(user.id);
-    setWithdrawals(sellerWithdrawals);
-
-    // Load categories
-    const allCategories = categoryService.getAll();
-    setCategories(allCategories.map(c => c.name));
+  const loadData = async () => {
+    const [
+      fetchedProducts, 
+      fetchedTransactions, 
+      fetchedWithdrawals, 
+      fetchedCategories
+    ] = await Promise.all([
+      productService.getBySeller(user.id),
+      transactionService.getBySeller(user.id),
+      withdrawalService.getBySeller(user.id),
+      categoryService.getAll()
+    ]);
+    
+    setProducts(fetchedProducts);
+    setTransactions(fetchedTransactions);
+    setWithdrawals(fetchedWithdrawals);
+    setCategories(fetchedCategories.map(c => c.name));
   };
 
   // Calculate total sales (verified transactions)
@@ -122,7 +128,31 @@ export default function SellerDashboard({ user, onLogout }: SellerDashboardProps
     availableBalance,
   };
 
-  const handleSaveProduct = () => {
+  const handleProductImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    // Validate file type
+    if (!file.type.startsWith('image/')) {
+      toast.error('File harus berupa gambar (JPG, PNG, JPEG)');
+      return;
+    }
+
+    // Validate file size (e.g., max 5MB)
+    if (file.size > 5 * 1024 * 1024) {
+      toast.error('Ukuran file maksimal 5MB');
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const result = event.target?.result as string;
+      setProductForm(prev => ({ ...prev, image_url: result }));
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleSaveProduct = async () => {
     if (!productForm.name || !productForm.price || !productForm.stock) {
       toast.error('Semua field wajib diisi');
       return;
@@ -144,10 +174,10 @@ export default function SellerDashboard({ user, onLogout }: SellerDashboardProps
     };
 
     if (editingProduct) {
-      productService.update(editingProduct.id, productData);
+      await productService.update(editingProduct.id, productData);
       toast.success('Produk berhasil diupdate');
     } else {
-      productService.create(productData);
+      await productService.create(productData);
       toast.success('Produk berhasil ditambahkan');
     }
 
@@ -157,21 +187,21 @@ export default function SellerDashboard({ user, onLogout }: SellerDashboardProps
     loadData();
   };
 
-  const handleDeleteProduct = (productId: string) => {
+  const handleDeleteProduct = async (productId: string) => {
     if (confirm('Apakah Anda yakin ingin menghapus produk ini?')) {
-      productService.delete(productId);
+      await productService.delete(productId);
       toast.success('Produk berhasil dihapus');
       loadData();
     }
   };
 
-  const handleToggleProductStatus = (product: Product) => {
-    productService.update(product.id, { is_active: !product.is_active });
+  const handleToggleProductStatus = async (product: Product) => {
+    await productService.update(product.id, { is_active: !product.is_active });
     toast.success(`Produk ${product.is_active ? 'dinonaktifkan' : 'diaktifkan'}`);
     loadData();
   };
 
-  const handleWithdrawalRequest = () => {
+  const handleWithdrawalRequest = async () => {
     const amount = parseInt(withdrawalForm.amount);
     if (!amount || amount < 10000) {
       toast.error('Minimal penarikan Rp 10.000');
@@ -207,14 +237,14 @@ export default function SellerDashboard({ user, onLogout }: SellerDashboardProps
       updated_at: new Date().toISOString(),
     };
 
-    withdrawalService.create(withdrawal);
+    await withdrawalService.create(withdrawal);
     toast.success('Pengajuan penarikan berhasil dikirim');
     setIsWithdrawalDialogOpen(false);
     setWithdrawalForm({ amount: '', bank_name: '', account_number: '', account_name: '' });
     loadData();
   };
 
-  const handleChangePassword = () => {
+  const handleChangePassword = async () => {
     if (!passwordForm.currentPassword || !passwordForm.newPassword || !passwordForm.confirmPassword) {
       toast.error('Semua field wajib diisi');
       return;
@@ -231,14 +261,14 @@ export default function SellerDashboard({ user, onLogout }: SellerDashboardProps
     }
 
     // Verify current password
-    const isValid = authService.verifyPassword(user.id, passwordForm.currentPassword);
+    const isValid = await authService.verifyPassword(user.id, passwordForm.currentPassword);
     if (!isValid) {
       toast.error('Password saat ini salah');
       return;
     }
 
     // Update password
-    authService.updatePassword(user.id, passwordForm.newPassword);
+    await authService.updatePassword(user.id, passwordForm.newPassword);
     toast.success('Password berhasil diubah');
     setIsPasswordDialogOpen(false);
     setPasswordForm({ currentPassword: '', newPassword: '', confirmPassword: '' });
@@ -736,13 +766,40 @@ export default function SellerDashboard({ user, onLogout }: SellerDashboardProps
             </div>
             
             <div className="space-y-2">
-              <Label className="text-blue-900">URL Gambar</Label>
-              <Input
-                value={productForm.image_url}
-                onChange={(e) => setProductForm({ ...productForm, image_url: e.target.value })}
-                placeholder="https://example.com/image.jpg"
-                className="border-blue-200"
-              />
+              <Label className="text-blue-900">Gambar Produk</Label>
+              <div 
+                onClick={() => productFileInputRef.current?.click()}
+                className="cursor-pointer border-2 border-dashed border-blue-200 rounded-xl p-4 flex flex-col items-center justify-center hover:bg-blue-50 transition-colors"
+              >
+                {productForm.image_url && productForm.image_url !== 'https://via.placeholder.com/400?text=No+Image' ? (
+                  <div className="relative w-full aspect-video rounded-lg overflow-hidden group">
+                    <img 
+                      src={productForm.image_url} 
+                      alt="Preview" 
+                      className="object-cover w-full h-full" 
+                    />
+                    <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                      <div className="flex flex-col items-center text-white">
+                        <ImageIcon className="w-8 h-8 mb-2" />
+                        <span className="text-sm font-medium">Ganti Gambar</span>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="text-center py-4">
+                    <Upload className="w-8 h-8 text-blue-400 mx-auto mb-2" />
+                    <p className="text-sm text-blue-600 font-medium">Upload Gambar Produk</p>
+                    <p className="text-xs text-blue-400 mt-1">Klik untuk memilih file dari perangkat Anda</p>
+                  </div>
+                )}
+                <input
+                  ref={productFileInputRef}
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={handleProductImageSelect}
+                />
+              </div>
             </div>
           </div>
           

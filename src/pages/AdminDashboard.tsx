@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { 
   LayoutDashboard, 
   Users, 
@@ -14,7 +14,8 @@ import {
   QrCode,
   Upload,
   Check,
-  XCircle
+  XCircle,
+  Image as ImageIcon
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -51,6 +52,7 @@ export default function AdminDashboard({ user, onLogout }: AdminDashboardProps) 
   const [withdrawals, setWithdrawals] = useState<Withdrawal[]>([]);
   const [failedValidations, setFailedValidations] = useState<FailedValidation[]>([]);
   const [qrisConfig, setQrisConfig] = useState<{ image_url: string; merchant_name: string } | null>(null);
+  const [revenue, setRevenue] = useState(0);
   
   // Dialog states
   const [isSellerDialogOpen, setIsSellerDialogOpen] = useState(false);
@@ -59,6 +61,8 @@ export default function AdminDashboard({ user, onLogout }: AdminDashboardProps) 
   const [selectedWithdrawal, setSelectedWithdrawal] = useState<Withdrawal | null>(null);
   const [transferProofUrl, setTransferProofUrl] = useState('');
   
+  const qrisFileInputRef = useRef<HTMLInputElement>(null);
+
   // Forms
   const [sellerForm, setSellerForm] = useState({
     full_name: '',
@@ -76,17 +80,36 @@ export default function AdminDashboard({ user, onLogout }: AdminDashboardProps) 
     loadData();
   }, []);
 
-  const loadData = () => {
-    setSellers(userService.getSellers());
-    setProducts(productService.getAll());
-    setTransactions(transactionService.getAll());
-    setWithdrawals(withdrawalService.getAll());
-    setFailedValidations(failedValidationService.getAll());
-    setQrisConfig(qrisService.get());
+  const loadData = async () => {
+    const [
+      fetchedSellers, 
+      fetchedProducts, 
+      fetchedTransactions, 
+      fetchedWithdrawals, 
+      fetchedFailed, 
+      fetchedQris,
+      fetchedRevenue
+    ] = await Promise.all([
+      userService.getSellers(),
+      productService.getAll(),
+      transactionService.getAll(),
+      withdrawalService.getAll(),
+      failedValidationService.getAll(),
+      qrisService.get(),
+      transactionService.getTotalRevenue()
+    ]);
+    
+    setSellers(fetchedSellers);
+    setProducts(fetchedProducts);
+    setTransactions(fetchedTransactions);
+    setWithdrawals(fetchedWithdrawals);
+    setFailedValidations(fetchedFailed);
+    setQrisConfig(fetchedQris);
+    setRevenue(fetchedRevenue);
   };
 
   const stats = {
-    totalRevenue: transactionService.getTotalRevenue(),
+    totalRevenue: revenue,
     totalTransactions: transactions.filter(t => t.status === 'verified').length,
     totalSellers: sellers.length,
     totalProducts: products.length,
@@ -94,7 +117,7 @@ export default function AdminDashboard({ user, onLogout }: AdminDashboardProps) 
     failedValidations: failedValidations.length,
   };
 
-  const handleAddSeller = () => {
+  const handleAddSeller = async () => {
     if (!sellerForm.full_name || !sellerForm.email || !sellerForm.nik) {
       toast.error('Nama, email, dan NIK wajib diisi');
       return;
@@ -112,20 +135,37 @@ export default function AdminDashboard({ user, onLogout }: AdminDashboardProps) 
       updated_at: new Date().toISOString(),
     };
 
-    userService.create(newSeller);
+    await userService.create(newSeller);
     toast.success('Seller berhasil ditambahkan');
     setIsSellerDialogOpen(false);
     setSellerForm({ full_name: '', email: '', nik: '', department: '', phone: '' });
     loadData();
   };
 
-  const handleUpdateQRIS = () => {
+  const handleQRISImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (!file.type.startsWith('image/')) {
+        toast.error('File harus berupa gambar');
+        return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+        const result = event.target?.result as string;
+        setQrisForm(prev => ({ ...prev, image_url: result }));
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleUpdateQRIS = async () => {
     if (!qrisForm.image_url || !qrisForm.merchant_name) {
-      toast.error('URL gambar dan nama merchant wajib diisi');
+      toast.error('Gambar dan nama merchant wajib diisi');
       return;
     }
 
-    qrisService.update({
+    await qrisService.update({
       image_url: qrisForm.image_url,
       merchant_name: qrisForm.merchant_name,
       updated_by: user.id,
@@ -135,21 +175,21 @@ export default function AdminDashboard({ user, onLogout }: AdminDashboardProps) 
     loadData();
   };
 
-  const handleProcessWithdrawal = (withdrawalId: string, action: 'approve' | 'reject') => {
+  const handleProcessWithdrawal = async (withdrawalId: string, action: 'approve' | 'reject') => {
     if (action === 'approve') {
       if (!transferProofUrl) {
         toast.error('URL bukti transfer wajib diisi');
         return;
       }
 
-      withdrawalService.update(withdrawalId, {
+      await withdrawalService.update(withdrawalId, {
         status: 'completed',
         transfer_proof_url: transferProofUrl,
         processed_at: new Date().toISOString(),
       });
       toast.success('Penarikan berhasil diproses');
     } else {
-      withdrawalService.update(withdrawalId, {
+      await withdrawalService.update(withdrawalId, {
         status: 'rejected',
         processed_at: new Date().toISOString(),
       });
@@ -741,13 +781,40 @@ export default function AdminDashboard({ user, onLogout }: AdminDashboardProps) 
           
           <div className="space-y-4 py-4">
             <div className="space-y-2">
-              <Label className="text-slate-900">URL Gambar QRIS</Label>
-              <Input
-                value={qrisForm.image_url}
-                onChange={(e) => setQrisForm({ ...qrisForm, image_url: e.target.value })}
-                placeholder="https://example.com/qris.png"
-                className="border-slate-200"
-              />
+              <Label className="text-slate-900">Gambar QRIS</Label>
+              <div 
+                onClick={() => qrisFileInputRef.current?.click()}
+                className="cursor-pointer border-2 border-dashed border-slate-200 rounded-xl p-4 flex flex-col items-center justify-center hover:bg-slate-50 transition-colors"
+              >
+                {qrisForm.image_url ? (
+                  <div className="relative w-full h-40 rounded-lg overflow-hidden group">
+                    <img 
+                      src={qrisForm.image_url} 
+                      alt="Preview" 
+                      className="object-contain w-full h-full" 
+                    />
+                    <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                      <div className="flex flex-col items-center text-white">
+                        <ImageIcon className="w-8 h-8 mb-2" />
+                        <span className="text-sm font-medium">Ganti Gambar</span>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="text-center py-4">
+                    <Upload className="w-8 h-8 text-slate-400 mx-auto mb-2" />
+                    <p className="text-sm text-slate-600 font-medium">Upload Gambar QRIS</p>
+                    <p className="text-xs text-slate-400 mt-1">Klik untuk memilih file</p>
+                  </div>
+                )}
+                <input
+                  ref={qrisFileInputRef}
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={handleQRISImageSelect}
+                />
+              </div>
             </div>
             
             <div className="space-y-2">
@@ -773,7 +840,7 @@ export default function AdminDashboard({ user, onLogout }: AdminDashboardProps) 
               onClick={handleUpdateQRIS}
               className="flex-1 bg-slate-900 hover:bg-slate-800"
             >
-              Update QRIS
+              Simpan QRIS
             </Button>
           </div>
         </DialogContent>
